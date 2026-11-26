@@ -68,9 +68,10 @@ for _code, _cfg in firebase_keys.items():
     _fb_app = firebase_admin.initialize_app(credentials.Certificate(_cfg), name=str(_code))
     CLIENTS[str(_code)] = firestore.client(_fb_app)
 
-# Only these roles may upload (comma separated). The web app sends GPF + password; they are checked
+# Who may upload: Admin, or any active user whose "permissions" list contains "loan-upload"
+# (granted in the web app's Permission Management). The web app sends GPF + password; they are checked
 # against the Users collection of the chosen branch, the same way the web app signs in.
-UPLOAD_ROLES = {r.strip() for r in os.environ.get("UPLOAD_ROLES", "Admin").split(",") if r.strip()}
+UPLOAD_PERMISSION = "loan-upload"
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*").strip()
 CORS(app, origins=[o.strip().rstrip("/") for o in ALLOWED_ORIGIN.split(",") if o.strip()] or "*")
 
@@ -121,8 +122,9 @@ def check_uploader(branch, gpf, password):
         FAILS.pop(key, None)
     if user.get("status") != "active":
         return None, ("This account is not active.", 403)
-    if user.get("role") not in UPLOAD_ROLES:
-        return None, ("You do not have permission to upload.", 403)
+    perms = user.get("permissions")
+    if user.get("role") != "Admin" and not (isinstance(perms, list) and UPLOAD_PERMISSION in perms):
+        return None, ("You do not have permission to upload. Ask the Admin to give you Loan Upload access.", 403)
     return user, None
 
 
@@ -236,9 +238,9 @@ def context_for_table(lines, table_top, previous_program, previous_program_name,
                 program = match.group(1).strip()
                 program_name = clean_cell(match.group(2))
         # Account code heading, e.g. Overdue( 100103 ) or Regular( 100101 ).
-        match = re.search(r"\b(Overdue|Regular)\s*\(\s*(\d{6})\s*\)", text, re.I)
+        match = re.search(r"\b(Overdue|Regular|Write[-\s]?off)\s*\(\s*(\d{6})\s*\)", text, re.I)
         if match:
-            status = match.group(1).title()
+            status = re.sub(r"\s+", "", match.group(1)).title()
             account = match.group(2)
     return program, program_name, status, account
 
@@ -445,9 +447,9 @@ def parse_pdf(pdf_path):
                     if match:
                         program_code = match.group(1)
                         program_name = clean_cell(match.group(2)) or None
-                    match = re.search(r"\b(Overdue|Regular)\s*\(\s*(\d{6})\s*\)", text, re.I)
+                    match = re.search(r"\b(Overdue|Regular|Write[-\s]?off)\s*\(\s*(\d{6})\s*\)", text, re.I)
                     if match:
-                        loan_status = match.group(1).title()
+                        loan_status = re.sub(r"\s+", "", match.group(1)).title()
                         account_code = match.group(2)
                 line_cursor = start["line_index"] + 1
                 next_top = starts[row_index + 1]["top"] if row_index + 1 < len(starts) else float("inf")
